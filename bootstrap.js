@@ -1,0 +1,402 @@
+/*
+ * Send to reMarkable - Zotero plugin
+ * Copyright (C) 2026 Rodney
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+/* Send to reMarkable - Zotero 7 bootstrapped plugin */
+var ZoteroRemarkable;
+
+function install() {}
+function uninstall() {}
+
+async function startup({ id, version, rootURI }) {
+  ZoteroRemarkable = {
+    id, version, rootURI,
+    menuIDs: [],
+    PREF: "extensions.zotero-remarkable.",
+
+    pref(name) { return Zotero.Prefs.get(this.PREF + name, true); },
+
+    async findRmapi() {
+      const custom = this.pref("rmapiPath");
+      const home = Services.dirsvc.get("Home", Ci.nsIFile).path;
+      const candidates = [custom, "/opt/homebrew/bin/rmapi", "/usr/local/bin/rmapi",
+        PathUtils.join(home, "go", "bin", "rmapi"), PathUtils.join(home, ".local", "bin", "rmapi"),
+        "/usr/bin/rmapi"].filter(Boolean);
+      for (const p of candidates) {
+        if (await IOUtils.exists(p)) return p;
+      }
+      return null;
+    },
+
+    safeName(s) {
+      return s.replace(/[\/\\:*?"<>|\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+    },
+
+    async pdfFor(item) {
+      let att = null;
+      if (item.isAttachment()) {
+        att = item;
+      } else if (item.isRegularItem()) {
+        att = await item.getBestAttachment();
+      }
+      if (!att || att.attachmentContentType !== "application/pdf") return null;
+      const path = await att.getFilePathAsync();
+      if (!path) return null;
+      const parent = att.parentItem || item;
+      const creators = parent.getCreators();
+      const first = creators.length ? creators[0].lastName || creators[0].name || "" : "";
+      const year = (parent.getField("date", true, true) || "").slice(0, 4);
+      const title = parent.getField("title") || att.getField("title") || "Untitled";
+      const label = this.safeName([first, year].filter(Boolean).join(" ") + (first || year ? " - " : "") + title);
+      return { path, label, parentID: att.parentItemID || item.id };
+    },
+
+    async sendSelected(window) {
+      const items = window.ZoteroPane.getSelectedItems();
+      const pw = new Zotero.ProgressWindow({ closeOnClick: true });
+      pw.changeHeadline("Send to reMarkable");
+      pw.show();
+      const line = new pw.ItemProgress("attachment-pdf", "Preparing…");
+      try {
+        const rmapi = await this.findRmapi();
+        if (!rmapi) {
+          throw new Error("rmapi not found. Install it (github.com/ddvk/rmapi), run it once to pair, "
+            + "or set extensions.zotero-remarkable.rmapiPath in the Config Editor.");
+        }
+        const folder = this.pref("folder") || "/Zotero";
+        try { await Zotero.Utilities.Internal.exec(rmapi, ["mkdir", folder]); } catch (e) { /* exists */ }
+
+        let sent = 0, skipped = 0, failed = [];
+        const tmpDir = PathUtils.join(PathUtils.tempDir, "zotero-remarkable");
+        await IOUtils.makeDirectory(tmpDir, { ignoreExisting: true });
+
+        for (const item of items) {
+          const pdf = await this.pdfFor(item);
+          if (!pdf) { skipped++; continue; }
+          line.setText(pdf.label);
+          const tmp = PathUtils.join(tmpDir, pdf.label + ".pdf");
+          try {
+            await IOUtils.copy(pdf.path, tmp, { noOverwrite: false });
+            await Zotero.Utilities.Internal.exec(rmapi, ["put", tmp, folder]);
+            sent++;
+          } catch (e) {
+            failed.push(pdf.label);
+            Zotero.logError(e);
+          } finally {
+            try { await IOUtils.remove(tmp); } catch (e) {}
+          }
+        }
+        let msg = `Sent ${sent} PDF${sent === 1 ? "" : "s"} to ${folder}`;
+        if (skipped) msg += `; ${skipped} without PDF`;
+        if (failed.length) msg += `; failed (already on tablet?): ${failed.join(", ")}`;
+        line.setText(this.trunc(msg, 60));
+        line.setProgress(100);
+        if (failed.length) {
+          pw.close();
+          this.showSummary(window, "Send to reMarkable", [msg, "", "Failed (already on tablet?):", ...failed.map(f => "  • " + f)]);
+          return;
+        }
+      } catch (e) {
+        Zotero.logError(e);
+        pw.close();
+        this.showSummary(window, "reMarkable", ["Error:", "", e.message]);
+        return;
+      }
+      pw.startCloseTimer(failedTimeout());
+      function failedTimeout() { return 6000; }
+    },
+
+    shq(str) { return "'" + String(str).replace(/'/g, "'\\''") + "'"; },
+
+    async getAnnotated(window) {
+      const items = window.ZoteroPane.getSelectedItems();
+      const pw = new Zotero.ProgressWindow({ closeOnClick: true });
+      pw.changeHeadline("Get from reMarkable");
+      pw.show();
+      const line = new pw.ItemProgress("attachment-pdf", "Preparing…");
+      try {
+        const rmapi = await this.findRmapi();
+        if (!rmapi) throw new Error("rmapi not found (see Send to reMarkable).");
+        const folder = (this.pref("folder") || "/Zotero").replace(/\/$/, "");
+        let got = 0, missing = [];
+        for (const item of items) {
+          const pdf = await this.pdfFor(item);
+          if (!pdf) continue;
+          line.setText(pdf.label);
+          const dir = PathUtils.join(PathUtils.tempDir, "zotero-remarkable-get-" + Date.now());
+          await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+          try {
+            const cmd = `cd ${this.shq(dir)} && ${this.shq(rmapi)} geta ${this.shq(folder + "/" + pdf.label)}`;
+            await Zotero.Utilities.Internal.exec("/bin/sh", ["-c", cmd]);
+            const files = (await IOUtils.getChildren(dir)).filter(p => p.toLowerCase().endsWith(".pdf"));
+            if (!files.length) throw new Error("no PDF downloaded");
+            await Zotero.Attachments.importFromFile({
+              file: files[0],
+              parentItemID: pdf.parentID,
+              title: "Annotated (reMarkable)",
+            });
+            got++;
+          } catch (e) {
+            missing.push(pdf.label);
+            Zotero.logError(e);
+          } finally {
+            try { await IOUtils.remove(dir, { recursive: true }); } catch (e) {}
+          }
+        }
+        let msg = `Attached ${got} annotated PDF${got === 1 ? "" : "s"}`;
+        if (missing.length) msg += `; not found/failed: ${missing.join(", ")}`;
+        line.setText(this.trunc(msg, 60));
+        line.setProgress(100);
+        if (missing.length) {
+          pw.close();
+          this.showSummary(window, "Get from reMarkable", [msg, "", "Not found or failed:", ...missing.map(f => "  • " + f)]);
+          return;
+        }
+      } catch (e) {
+        Zotero.logError(e);
+        pw.close();
+        this.showSummary(window, "reMarkable", ["Error:", "", e.message]);
+        return;
+      }
+      pw.startCloseTimer(6000);
+    },
+
+    // ---------- collection sync ----------
+    stateFile() { return PathUtils.join(Zotero.DataDirectory.dir, "remarkable-sync.json"); },
+    async loadState() {
+      try { return JSON.parse(await IOUtils.readUTF8(this.stateFile())); } catch (e) { return { items: {} }; }
+    },
+    async saveState(st) { await IOUtils.writeUTF8(this.stateFile(), JSON.stringify(st, null, 1)); },
+
+    // run a shell command, capture combined output
+    async sh(cmd) {
+      const tmp = PathUtils.join(PathUtils.tempDir, "zr-out-" + Math.random().toString(36).slice(2));
+      let ok = true;
+      try {
+        await Zotero.Utilities.Internal.exec("/bin/sh", ["-c", `${cmd} > ${this.shq(tmp)} 2>&1`]);
+      } catch (e) { ok = false; }
+      let out = "";
+      try { out = await IOUtils.readUTF8(tmp); await IOUtils.remove(tmp); } catch (e) {}
+      return { ok, out };
+    },
+
+    async remoteModified(rmapi, path) {
+      const r = await this.sh(`${this.shq(rmapi)} stat ${this.shq(path)}`);
+      if (!r.ok) return null;
+      const m = r.out.match(/"lastModified"\s*:\s*"?([^",}\s]+)/i);
+      return m ? m[1] : null;
+    },
+
+    async hashFile(path) {
+      try { return await Zotero.Utilities.Internal.md5Async(Zotero.File.pathToFile(path)); }
+      catch (e) { return "size:" + (await IOUtils.stat(path)).size; }
+    },
+
+    selectedCollections(window) {
+      const zp = window.ZoteroPane;
+      const cols = zp.getSelectedCollections ? zp.getSelectedCollections() : [zp.getSelectedCollection()];
+      return cols.filter(c => c && c.name !== undefined && c.id);
+    },
+
+    // Fingerprint of the ink/highlight files stored in the document on the tablet.
+    // Empty string = no annotations at all.
+    async annotationFingerprint(rmapi, remote, work) {
+      await IOUtils.makeDirectory(work, { ignoreExisting: true });
+      const r = await this.sh(`cd ${this.shq(work)} && ${this.shq(rmapi)} get ${this.shq(remote)}`);
+      if (!r.ok) return null;
+      const arch = (await IOUtils.getChildren(work)).find(p => /\.(rmdoc|zip)$/i.test(p));
+      if (!arch) return null;
+      const ex = PathUtils.join(work, "x");
+      await IOUtils.makeDirectory(ex, { ignoreExisting: true });
+      const u = await this.sh(`/usr/bin/unzip -o -q ${this.shq(arch)} -d ${this.shq(ex)}`);
+      if (!u.ok) return null;
+      const files = [];
+      const walkDir = async (d) => {
+        for (const p of await IOUtils.getChildren(d)) {
+          const st = await IOUtils.stat(p);
+          if (st.type === "directory") await walkDir(p);
+          else files.push({ p, size: st.size });
+        }
+      };
+      await walkDir(ex);
+      // ink pages (.rm) with real content; highlight json with real content
+      const rel = files.filter(f => (/\.rm$/i.test(f.p) && f.size > 200)
+        || (/\.highlights\//i.test(f.p) && /\.json$/i.test(f.p) && f.size > 60));
+      if (!rel.length) return "";
+      rel.sort((a, b) => a.p.localeCompare(b.p));
+      const parts = [];
+      for (const f of rel) parts.push(PathUtils.filename(f.p) + ":" + await this.hashFile(f.p));
+      return parts.join("|");
+    },
+
+    trunc(t, n = 45) { t = String(t); return t.length > n ? t.slice(0, n - 1) + "…" : t; },
+
+    // readable result dialog
+    showSummary(window, title, lines) {
+      Services.prompt.alert(window, title, lines.join("\n"));
+    },
+
+    countItems(col) {
+      let n = col.getChildItems().filter(i => i.isRegularItem()).length;
+      for (const sub of Zotero.Collections.getByParent(col.id)) n += this.countItems(sub);
+      return n;
+    },
+
+    async syncCollections(window) {
+      const cols = this.selectedCollections(window);
+      const pw = new Zotero.ProgressWindow({ closeOnClick: true });
+      pw.changeHeadline("Sync with reMarkable");
+      pw.show();
+      const line = new pw.ItemProgress("collection", "Preparing…");
+      const stats = { pushed: 0, pulled: 0, unchanged: 0, nopdf: 0, failed: [] };
+      try {
+        if (!cols.length) throw new Error("Select a collection first.");
+        const rmapi = await this.findRmapi();
+        if (!rmapi) throw new Error("rmapi not found (see Send to reMarkable).");
+        const root = (this.pref("folder") || "/Zotero").replace(/\/$/, "");
+        const st = await this.loadState();
+        st.items = st.items || {};
+        const made = new Set();
+        let total = 0, done = 0;
+        for (const c of cols) total += this.countItems(c);
+        const tmpRoot = PathUtils.join(PathUtils.tempDir, "zotero-remarkable-sync-" + Date.now());
+        await IOUtils.makeDirectory(tmpRoot, { ignoreExisting: true });
+
+        const ensureDir = async (path) => {
+          let cur = "";
+          for (const part of path.split("/").filter(Boolean)) {
+            cur += "/" + part;
+            if (made.has(cur)) continue;
+            await this.sh(`${this.shq(rmapi)} mkdir ${this.shq(cur)}`);
+            made.add(cur);
+          }
+        };
+
+        const syncItem = async (item, dir) => {
+          const pdf = await this.pdfFor(item);
+          if (!pdf) { stats.nopdf++; return; }
+          line.setText(`${done + 1} / ${total}: ${this.trunc(pdf.label)}`);
+          line.setProgress(Math.round((done / Math.max(total, 1)) * 100));
+          const remote = `${dir}/${pdf.label}`;
+          const rec = st.items[item.key];
+
+          if (!rec || rec.remote !== remote) {
+            const tmp = PathUtils.join(tmpRoot, pdf.label + ".pdf");
+            await IOUtils.copy(pdf.path, tmp, { noOverwrite: false });
+            const r = await this.sh(`${this.shq(rmapi)} put ${this.shq(tmp)} ${this.shq(dir)}`);
+            try { await IOUtils.remove(tmp); } catch (e) {}
+            if (!r.ok && !/exist/i.test(r.out)) { stats.failed.push(pdf.label); Zotero.debug("rm put: " + r.out); return; }
+            st.items[item.key] = { remote, modified: await this.remoteModified(rmapi, remote), hash: null, fp: "", attID: rec?.attID };
+            stats.pushed++;
+            return;
+          }
+
+          const mod = await this.remoteModified(rmapi, remote);
+          if (mod && mod === rec.modified) { stats.unchanged++; return; }
+
+          const dl = PathUtils.join(tmpRoot, item.key);
+          const fp = await this.annotationFingerprint(rmapi, remote, dl);
+          try { await IOUtils.remove(dl, { recursive: true }); } catch (e) {}
+          if (fp === null) { stats.failed.push(pdf.label); return; }
+          if (fp === "" || fp === (rec.fp || "")) { rec.modified = mod; stats.unchanged++; return; }
+
+          const dl2 = PathUtils.join(tmpRoot, item.key + "-pdf");
+          await IOUtils.makeDirectory(dl2, { ignoreExisting: true });
+          const r = await this.sh(`cd ${this.shq(dl2)} && ${this.shq(rmapi)} geta ${this.shq(remote)}`);
+          const files = r.ok ? (await IOUtils.getChildren(dl2)).filter(p => p.toLowerCase().endsWith(".pdf")) : [];
+          if (!files.length) { stats.failed.push(pdf.label); Zotero.debug("rm geta: " + r.out); return; }
+          const hash = await this.hashFile(files[0]);
+          const att = await Zotero.Attachments.importFromFile({
+            file: files[0], parentItemID: pdf.parentID, title: "Annotated (reMarkable)",
+          });
+          if (rec.attID) {
+            const old = Zotero.Items.get(rec.attID);
+            if (old && !old.deleted) { old.deleted = true; await old.saveTx(); } // to Zotero trash, recoverable
+          }
+          rec.attID = att.id; rec.hash = hash; rec.fp = fp; rec.modified = mod;
+          stats.pulled++;
+        };
+
+        const walk = async (col, dir) => {
+          const here = dir + "/" + this.safeName(col.name);
+          await ensureDir(here);
+          for (const item of col.getChildItems()) {
+            if (!item.isRegularItem()) continue;
+            try { await syncItem(item, here); } catch (e) { Zotero.logError(e); stats.failed.push(item.getField("title")); }
+            done++;
+            await this.saveState(st);
+          }
+          for (const sub of Zotero.Collections.getByParent(col.id)) await walk(sub, here);
+        };
+
+        for (const col of cols) await walk(col, root);
+        try { await IOUtils.remove(tmpRoot, { recursive: true }); } catch (e) {}
+
+        line.setText("Done");
+        line.setProgress(100);
+        pw.close();
+        const out = [
+          `Sent to tablet: ${stats.pushed}`,
+          `Annotated copies fetched: ${stats.pulled}`,
+          `Unchanged: ${stats.unchanged}`,
+        ];
+        if (stats.nopdf) out.push(`Skipped (no PDF): ${stats.nopdf}`);
+        if (stats.failed.length) {
+          out.push("", `Failed (${stats.failed.length}):`);
+          for (const f of stats.failed) out.push("  • " + f);
+        }
+        this.showSummary(window, "Sync with reMarkable", out);
+        return;
+      } catch (e) {
+        Zotero.logError(e);
+        pw.close();
+        this.showSummary(window, "Sync with reMarkable", ["Error:", "", e.message]);
+      }
+    },
+
+    addToWindow(window) {
+      const doc = window.document;
+      const menu = doc.getElementById("zotero-itemmenu");
+      if (!menu) return;
+      const sep = doc.createXULElement("menuseparator");
+      sep.id = "zotero-remarkable-sep";
+      const mi = doc.createXULElement("menuitem");
+      mi.id = "zotero-remarkable-send";
+      mi.setAttribute("label", "Send to reMarkable");
+      mi.addEventListener("command", () => this.sendSelected(window));
+      const mi2 = doc.createXULElement("menuitem");
+      mi2.id = "zotero-remarkable-get";
+      mi2.setAttribute("label", "Get annotated PDF from reMarkable");
+      mi2.addEventListener("command", () => this.getAnnotated(window));
+      menu.append(sep, mi, mi2);
+      this.menuIDs.push(sep.id, mi.id, mi2.id);
+      const cmenu = doc.getElementById("zotero-collectionmenu");
+      if (cmenu) {
+        const csep = doc.createXULElement("menuseparator");
+        csep.id = "zotero-remarkable-csep";
+        const cmi = doc.createXULElement("menuitem");
+        cmi.id = "zotero-remarkable-sync";
+        cmi.setAttribute("label", "Sync collection with reMarkable");
+        cmi.addEventListener("command", () => this.syncCollections(window));
+        cmenu.append(csep, cmi);
+        this.menuIDs.push(csep.id, cmi.id);
+      }
+    },
+
+    removeFromWindow(window) {
+      for (const id of this.menuIDs) window.document.getElementById(id)?.remove();
+    },
+  };
+
+  for (const win of Zotero.getMainWindows()) ZoteroRemarkable.addToWindow(win);
+}
+
+function onMainWindowLoad({ window }) { ZoteroRemarkable?.addToWindow(window); }
+function onMainWindowUnload({ window }) { ZoteroRemarkable?.removeFromWindow(window); }
+
+function shutdown() {
+  if (!ZoteroRemarkable) return;
+  for (const win of Zotero.getMainWindows()) ZoteroRemarkable.removeFromWindow(win);
+  ZoteroRemarkable = undefined;
+}
