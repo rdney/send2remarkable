@@ -3,8 +3,8 @@
     "zotero-remarkable@rodney.local": {
       "updates": [
         {
-          "version": "0.4.0",
-          "update_link": "https://github.com/rdney/send2remarkable/releases/download/v0.4.0/send2remarkable-0.4.0.xpi",
+          "version": "0.4.1",
+          "update_link": "https://github.com/rdney/send2remarkable/releases/download/v0.4.1/send2remarkable-0.4.1.xpi",
           "applications": {
             "zotero": {
               "strict_min_version": "6.999",

@@ -67,7 +67,7 @@ async function startup({ id, version, rootURI }) {
       const year = (parent.getField("date", true, true) || "").slice(0, 4);
       const title = parent.getField("title") || att.getField("title") || "Untitled";
       const label = this.safeName([first, year].filter(Boolean).join(" ") + (first || year ? " - " : "") + title);
-      return { path, label, parentID: att.parentItemID || item.id };
+      return { path, label, parentID: att.parentItemID || item.id, parentKey: parent.key };
     },
 
     async sendSelected(window) {
@@ -85,18 +85,24 @@ async function startup({ id, version, rootURI }) {
         const folder = this.folder();
         try { await Zotero.Utilities.Internal.exec(rmapi, ["mkdir", folder]); } catch (e) { /* exists */ }
 
-        let sent = 0, skipped = 0, failed = [];
+        let sent = 0, skipped = 0, already = 0, failed = [];
+        const st = await this.loadState();
+        st.items = st.items || {};
         const tmpDir = PathUtils.join(PathUtils.tempDir, "zotero-remarkable");
         await IOUtils.makeDirectory(tmpDir, { ignoreExisting: true });
 
         for (const item of items) {
           const pdf = await this.pdfFor(item);
           if (!pdf) { skipped++; continue; }
-          line.setText(pdf.label);
+          if (st.items[pdf.parentKey]) { already++; continue; }
+          line.setText(this.trunc(pdf.label));
           const tmp = PathUtils.join(tmpDir, pdf.label + ".pdf");
           try {
             await IOUtils.copy(pdf.path, tmp, { noOverwrite: false });
             await Zotero.Utilities.Internal.exec(rmapi, ["put", tmp, folder]);
+            const remote = `${folder}/${pdf.label}`;
+            st.items[pdf.parentKey] = { remote, modified: await this.remoteModified(rmapi, remote), hash: null, fp: "" };
+            await this.saveState(st);
             sent++;
           } catch (e) {
             failed.push(pdf.label);
@@ -107,6 +113,7 @@ async function startup({ id, version, rootURI }) {
         }
         let msg = `Sent ${sent} PDF${sent === 1 ? "" : "s"} to ${folder}`;
         if (skipped) msg += `; ${skipped} without PDF`;
+        if (already) msg += `; ${already} already on the tablet`;
         if (failed.length) msg += `; failed (already on tablet?): ${failed.join(", ")}`;
         line.setText(this.trunc(msg, 60));
         line.setProgress(100);
@@ -136,35 +143,49 @@ async function startup({ id, version, rootURI }) {
       try {
         const rmapi = await this.findRmapi();
         if (!rmapi) throw new Error("rmapi not found (see Send to reMarkable).");
-        const folder = this.folder();
-        let got = 0, missing = [];
+        const st = await this.loadState();
+        st.items = st.items || {};
+        let got = 0;
+        const missing = [];
         for (const item of items) {
           const pdf = await this.pdfFor(item);
           if (!pdf) continue;
-          line.setText(pdf.label);
+          line.setText(this.trunc(pdf.label));
+          const rec = st.items[pdf.parentKey];
+          // where the sync (or a single send) put it; fall back to the root folder
+          const remote = rec?.remote || `${this.folder()}/${pdf.label}`;
           const dir = PathUtils.join(PathUtils.tempDir, "zotero-remarkable-get-" + Date.now());
           await IOUtils.makeDirectory(dir, { ignoreExisting: true });
           try {
-            const cmd = `cd ${this.shq(dir)} && ${this.shq(rmapi)} geta ${this.shq(folder + "/" + pdf.label)}`;
-            await Zotero.Utilities.Internal.exec("/bin/sh", ["-c", cmd]);
-            const files = (await IOUtils.getChildren(dir)).filter(p => p.toLowerCase().endsWith(".pdf"));
-            if (!files.length) throw new Error("no PDF downloaded");
-            await Zotero.Attachments.importFromFile({
-              file: files[0],
-              parentItemID: pdf.parentID,
-              title: "Annotated (reMarkable)",
+            const r = await this.sh(`cd ${this.shq(dir)} && ${this.shq(rmapi)} geta ${this.shq(remote)}`);
+            const files = r.ok ? (await IOUtils.getChildren(dir)).filter(p => p.toLowerCase().endsWith(".pdf")) : [];
+            if (!files.length) {
+              missing.push(`${pdf.label}\n      looked for: ${remote}\n      ${(r.out || "no output").trim().split("\n").slice(-1)[0]}`);
+              continue;
+            }
+            const att = await Zotero.Attachments.importFromFile({
+              file: files[0], parentItemID: pdf.parentID, title: "Annotated (reMarkable)",
             });
+            if (rec?.attID) {
+              const old = Zotero.Items.get(rec.attID);
+              if (old && !old.deleted) { old.deleted = true; await old.saveTx(); }
+            }
+            const fp = await this.annotationFingerprint(rmapi, remote, PathUtils.join(dir, "fp")).catch(() => null);
+            st.items[pdf.parentKey] = {
+              remote, attID: att.id, hash: await this.hashFile(files[0]),
+              fp: fp ?? rec?.fp ?? "", modified: await this.remoteModified(rmapi, remote),
+            };
+            await this.saveState(st);
             got++;
           } catch (e) {
-            missing.push(pdf.label);
+            missing.push(`${pdf.label}\n      ${e.message}`);
             Zotero.logError(e);
           } finally {
             try { await IOUtils.remove(dir, { recursive: true }); } catch (e) {}
           }
         }
-        let msg = `Attached ${got} annotated PDF${got === 1 ? "" : "s"}`;
-        if (missing.length) msg += `; not found/failed: ${missing.join(", ")}`;
-        line.setText(this.trunc(msg, 60));
+        const msg = `Attached ${got} annotated PDF${got === 1 ? "" : "s"}`;
+        line.setText(msg);
         line.setProgress(100);
         if (missing.length) {
           pw.close();
