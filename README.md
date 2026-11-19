@@ -24,7 +24,7 @@ Send PDFs from Zotero to a reMarkable tablet, keep a whole collection in sync, a
 ## Install
 
 1. Install `rmapi`: download the build for your system from the [releases page](https://github.com/ddvk/rmapi/releases), put it on your `PATH` (for example `/usr/local/bin`), and run `rmapi` once to pair it with a one-time code from <https://my.remarkable.com/device/desktop/connect>.
-2. Download the latest `send2remarkable-x.y.z.xpi` from the [`builds/`](builds/) folder (open the file and use the download button).
+2. Download the latest `send2remarkable-x.y.z.xpi` from the [Releases](https://github.com/rdney/send2remarkable/releases) page.
 3. In Zotero: **Tools > Plugins**, drag the `.xpi` into the window.
 
 The plugin finds `rmapi` in `/opt/homebrew/bin`, `/usr/local/bin`, `~/go/bin`, `~/.local/bin` and `/usr/bin`.
@@ -63,7 +63,7 @@ There is no settings pane yet. Use **Settings > Advanced > Config Editor**:
 ## Build
 
 ```sh
-./build.sh      # creates dist/send2remarkable-<version>.xpi (copy it to builds/ for a release)
+./build.sh      # creates dist/send2remarkable-<version>.xpi
 ```
 
 The plugin is plain JavaScript (`bootstrap.js`) with no build step.
@@ -71,3 +71,9 @@ The plugin is plain JavaScript (`bootstrap.js`) with no build step.
 ## License
 
 Copyright (C) 2026 Rodney. Licensed under the [GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later), the same license family as Zotero.
+
+## Releasing
+
+1. Bump `version` in `manifest.json`, and update `version`, `update_link` and `update_hash` in `updates.json` (`shasum -a 256 dist/*.xpi`).
+2. Commit, then tag and push: `git tag v<version> && git push origin v<version>`.
+3. The `Release` workflow builds the `.xpi` and publishes the GitHub release.
