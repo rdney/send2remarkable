@@ -328,6 +328,19 @@ async function startup({ id, version, rootURI }) {
       return res;
     },
 
+    trunc(t, n = 45) { t = String(t); return t.length > n ? t.slice(0, n - 1) + "…" : t; },
+
+    // readable result dialog
+    showSummary(window, title, lines) {
+      Services.prompt.alert(window, title, lines.join("\n"));
+    },
+
+    countItems(col) {
+      let n = col.getChildItems().filter(i => i.isRegularItem()).length;
+      for (const sub of Zotero.Collections.getByParent(col.id)) n += this.countItems(sub);
+      return n;
+    },
+
     async syncCollections(window) {
       const cols = this.selectedCollections(window);
       const pw = new Zotero.ProgressWindow({ closeOnClick: true });

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Send to reMarkable",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Right-click a Zotero item and send its PDF to your reMarkable tablet via rmapi.",
   "author": "Rodney",
   "applications": {
@@ -12,6 +12,5 @@
       "update_url": "https://raw.githubusercontent.com/rdney/send2remarkable/main/updates.json"
     }
   },
-  "homepage_url": "https://github.com/rdney/send2remarkable",
-  "license": "AGPL-3.0-or-later"
+  "homepage_url": "https://github.com/rdney/send2remarkable"
 }
