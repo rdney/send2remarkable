@@ -74,6 +74,6 @@ Copyright (C) 2026 Rodney. Licensed under the [GNU Affero General Public License
 
 ## Releasing
 
-1. Bump `version` in `manifest.json`, and update `version` and `update_link` in `updates.json`.
-2. Commit, then tag and push: `git tag v<version> && git push origin v<version>`.
-3. The `Release` workflow builds the `.xpi` and publishes the GitHub release.
+1. Bump `version` in `manifest.json`, and update `version` and `update_link` in `updates.json`. Commit and push to `main`.
+2. On GitHub open **Actions > Release > Run workflow**. It builds the `.xpi` and publishes release `v<version>` with the file attached.
+   (Pushing a tag such as `v0.3.3` triggers the same workflow.)
