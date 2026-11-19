@@ -74,6 +74,6 @@ Copyright (C) 2026 Rodney. Licensed under the [GNU Affero General Public License
 
 ## Releasing
 
-1. Bump `version` in `manifest.json`, and update `version`, `update_link` and `update_hash` in `updates.json` (`shasum -a 256 dist/*.xpi`).
+1. Bump `version` in `manifest.json`, and update `version` and `update_link` in `updates.json`.
 2. Commit, then tag and push: `git tag v<version> && git push origin v<version>`.
 3. The `Release` workflow builds the `.xpi` and publishes the GitHub release.

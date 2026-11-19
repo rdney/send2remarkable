@@ -5,9 +5,11 @@
         {
           "version": "0.3.3",
           "update_link": "https://github.com/rdney/send2remarkable/releases/download/v0.3.3/send2remarkable-0.3.3.xpi",
-          "update_hash": "sha256:31f50f6665346a5d8146750c80edb5057d6c62ec7b1c0eead20f5f67ebc41a2b",
           "applications": {
-            "zotero": { "strict_min_version": "6.999", "strict_max_version": "10.0.*" }
+            "zotero": {
+              "strict_min_version": "6.999",
+              "strict_max_version": "10.0.*"
+            }
           }
         }
       ]
