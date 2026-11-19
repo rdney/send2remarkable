@@ -11,7 +11,7 @@ Send PDFs from Zotero to a reMarkable tablet, keep a whole collection in sync, a
 - **Sync collection with reMarkable** – right-click a collection to:
   - mirror the collection tree as folders on the tablet (`/Zotero/<collection>/<subcollection>`),
   - upload new PDFs,
-  - fetch PDFs you have actually annotated on the tablet and attach them as **Annotated (reMarkable)**, replacing the previous annotated copy (the old one goes to the Zotero trash, so it is recoverable).
+  - for documents you have annotated on the tablet: write your **text highlights** into a child note (quotes with page numbers) and attach the annotated PDF as **Annotated (reMarkable)**, replacing the previous copy (the old one goes to the Zotero trash, so it is recoverable).
 - Nothing is ever deleted from the tablet.
 
 ## Requirements
@@ -34,6 +34,7 @@ The plugin finds `rmapi` in `/opt/homebrew/bin`, `/usr/local/bin`, `~/go/bin`, `
 Open **Zotero > Settings > reMarkable**:
 
 - **Folder on the tablet** – root folder for uploads (default `/Zotero`).
+- **Create a note with the text highlights** / **Attach the annotated PDF** – choose what comes back from the tablet (both on by default).
 - **Path to rmapi** – leave empty to search the usual locations, or enter the full path. The **Check rmapi** button shows which `rmapi` the plugin will use.
 
 ## How sync decides what to do
@@ -44,6 +45,10 @@ Open **Zotero > Settings > reMarkable**:
 - Bookkeeping is stored in `remarkable-sync.json` in your Zotero data directory.
 
 ## Limitations
+
+- Highlights come back as a note, not as annotations in Zotero's reader. Only highlights made with the text-snapping highlighter have text; freehand highlighter strokes and handwriting are not converted to text (they appear in the annotated PDF).
+- The annotated PDF is drawn by `rmapi`, which shows highlights as grey bars. The note is the faithful copy of your highlights.
+- Highlight text is read directly from the tablet's page files (`.rm`, format version 6). Other firmware versions may store it differently.
 
 - The tablet name is derived from author, year and title. Changing those in Zotero makes the next sync upload the item again as a new document.
 - Annotations come back as ink baked into the PDF pages, not as editable annotations in Zotero's sidebar.

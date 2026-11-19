@@ -17,6 +17,41 @@ async function startup({ id, version, rootURI }) {
 
     pref(name) { return Zotero.Prefs.get(this.PREF + name, true); },
 
+    boolPref(name) { return !!Zotero.Prefs.get(this.PREF + name, true); },
+
+    esc(t) { return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); },
+
+    buildNoteHtml(res) {
+      const date = new Date().toISOString().slice(0, 10);
+      let h = `<h2>reMarkable highlights</h2><p><em>Imported ${date}. This note is regenerated when the tablet document changes; copy anything you want to keep into another note.</em></p>`;
+      for (const p of res.pages) {
+        h += `<h3>${p.page ? "Page " + p.page : "Page ?"}</h3>`;
+        for (const hl of p.highlights) {
+          const c = this.rm.RM_COLORS[hl.color];
+          const tag = c && c !== "yellow" ? ` <em>(${c})</em>` : "";
+          h += `<blockquote><p>${this.esc(hl.text)}${tag}</p></blockquote>`;
+        }
+      }
+      if (res.inkPages.length) {
+        h += `<p><em>Handwriting or drawings on page ${res.inkPages.filter(n => n).join(", ")}: see the annotated PDF.</em></p>`;
+      }
+      return h;
+    },
+
+    async upsertNote(parentID, rec, html) {
+      let note = rec.noteID ? Zotero.Items.get(rec.noteID) : null;
+      if (note && !note.deleted) {
+        if (note.getNote() !== html) { note.setNote(html); await note.saveTx(); }
+      } else {
+        note = new Zotero.Item("note");
+        note.libraryID = Zotero.Items.get(parentID).libraryID;
+        note.parentID = parentID;
+        note.setNote(html);
+        await note.saveTx();
+      }
+      rec.noteID = note.id;
+    },
+
     // folder on the tablet: always absolute, no trailing slash
     folder() {
       let f = String(this.pref("folder") || "").trim();
@@ -170,11 +205,15 @@ async function startup({ id, version, rootURI }) {
               const old = Zotero.Items.get(rec.attID);
               if (old && !old.deleted) { old.deleted = true; await old.saveTx(); }
             }
-            const fp = await this.annotationFingerprint(rmapi, remote, PathUtils.join(dir, "fp")).catch(() => null);
-            st.items[pdf.parentKey] = {
-              remote, attID: att.id, hash: await this.hashFile(files[0]),
-              fp: fp ?? rec?.fp ?? "", modified: await this.remoteModified(rmapi, remote),
+            const res = await this.annotationFingerprint(rmapi, remote, PathUtils.join(dir, "fp")).catch(() => null);
+            const newRec = {
+              remote, attID: att.id, hash: await this.hashFile(files[0]), noteID: rec?.noteID,
+              fp: res?.fp ?? rec?.fp ?? "", modified: await this.remoteModified(rmapi, remote),
             };
+            if (this.boolPref("createNote") && res && res.pages.length) {
+              await this.upsertNote(pdf.parentID, newRec, this.buildNoteHtml(res));
+            }
+            st.items[pdf.parentKey] = newRec;
             await this.saveState(st);
             got++;
           } catch (e) {
@@ -260,26 +299,33 @@ async function startup({ id, version, rootURI }) {
       };
       await walkDir(ex);
       // ink pages (.rm) with real content; highlight json with real content
+      const res = { fp: "", pages: [], inkPages: [] };
       const rel = files.filter(f => (/\.rm$/i.test(f.p) && f.size > 200)
         || (/\.highlights\//i.test(f.p) && /\.json$/i.test(f.p) && f.size > 60));
-      if (!rel.length) return "";
+      if (!rel.length) return res;
       rel.sort((a, b) => a.p.localeCompare(b.p));
       const parts = [];
       for (const f of rel) parts.push(PathUtils.filename(f.p) + ":" + await this.hashFile(f.p));
-      return parts.join("|");
-    },
+      res.fp = parts.join("|");
 
-    trunc(t, n = 45) { t = String(t); return t.length > n ? t.slice(0, n - 1) + "…" : t; },
-
-    // readable result dialog
-    showSummary(window, title, lines) {
-      Services.prompt.alert(window, title, lines.join("\n"));
-    },
-
-    countItems(col) {
-      let n = col.getChildItems().filter(i => i.isRegularItem()).length;
-      for (const sub of Zotero.Collections.getByParent(col.id)) n += this.countItems(sub);
-      return n;
+      // page order, then the text highlights on each page
+      let order = [];
+      try {
+        const cf = files.find(f => /\.content$/i.test(f.p));
+        const c = JSON.parse(await IOUtils.readUTF8(cf.p));
+        order = (c.cPages && c.cPages.pages ? c.cPages.pages.map(p => p.id) : c.pages) || [];
+      } catch (e) {}
+      for (const f of rel) {
+        if (!/\.rm$/i.test(f.p)) continue;
+        const pid = PathUtils.filename(f.p).replace(/\.rm$/i, "");
+        const pageNo = order.indexOf(pid) + 1;
+        let hl = [];
+        try { hl = this.rm.mergeGlyphs(this.rm.parseGlyphs(await IOUtils.read(f.p))); } catch (e) { Zotero.logError(e); }
+        if (hl.length) res.pages.push({ page: pageNo, highlights: hl }); else res.inkPages.push(pageNo);
+      }
+      res.pages.sort((x, y) => x.page - y.page);
+      res.inkPages.sort((x, y) => x - y);
+      return res;
     },
 
     async syncCollections(window) {
@@ -335,25 +381,32 @@ async function startup({ id, version, rootURI }) {
           if (mod && mod === rec.modified) { stats.unchanged++; return; }
 
           const dl = PathUtils.join(tmpRoot, item.key);
-          const fp = await this.annotationFingerprint(rmapi, remote, dl);
+          const res = await this.annotationFingerprint(rmapi, remote, dl);
           try { await IOUtils.remove(dl, { recursive: true }); } catch (e) {}
-          if (fp === null) { stats.failed.push(pdf.label); return; }
+          if (res === null) { stats.failed.push(pdf.label); return; }
+          const fp = res.fp;
           if (fp === "" || fp === (rec.fp || "")) { rec.modified = mod; stats.unchanged++; return; }
 
-          const dl2 = PathUtils.join(tmpRoot, item.key + "-pdf");
-          await IOUtils.makeDirectory(dl2, { ignoreExisting: true });
-          const r = await this.sh(`cd ${this.shq(dl2)} && ${this.shq(rmapi)} geta ${this.shq(remote)}`);
-          const files = r.ok ? (await IOUtils.getChildren(dl2)).filter(p => p.toLowerCase().endsWith(".pdf")) : [];
-          if (!files.length) { stats.failed.push(pdf.label); Zotero.debug("rm geta: " + r.out); return; }
-          const hash = await this.hashFile(files[0]);
-          const att = await Zotero.Attachments.importFromFile({
-            file: files[0], parentItemID: pdf.parentID, title: "Annotated (reMarkable)",
-          });
-          if (rec.attID) {
-            const old = Zotero.Items.get(rec.attID);
-            if (old && !old.deleted) { old.deleted = true; await old.saveTx(); } // to Zotero trash, recoverable
+          if (this.boolPref("createNote") && res.pages.length) {
+            await this.upsertNote(pdf.parentID, rec, this.buildNoteHtml(res));
           }
-          rec.attID = att.id; rec.hash = hash; rec.fp = fp; rec.modified = mod;
+          if (this.boolPref("attachPdf")) {
+            const dl2 = PathUtils.join(tmpRoot, item.key + "-pdf");
+            await IOUtils.makeDirectory(dl2, { ignoreExisting: true });
+            const r = await this.sh(`cd ${this.shq(dl2)} && ${this.shq(rmapi)} geta ${this.shq(remote)}`);
+            const files = r.ok ? (await IOUtils.getChildren(dl2)).filter(p => p.toLowerCase().endsWith(".pdf")) : [];
+            if (!files.length) { stats.failed.push(pdf.label); Zotero.debug("rm geta: " + r.out); return; }
+            const hash = await this.hashFile(files[0]);
+            const att = await Zotero.Attachments.importFromFile({
+              file: files[0], parentItemID: pdf.parentID, title: "Annotated (reMarkable)",
+            });
+            if (rec.attID) {
+              const old = Zotero.Items.get(rec.attID);
+              if (old && !old.deleted) { old.deleted = true; await old.saveTx(); } // to Zotero trash, recoverable
+            }
+            rec.attID = att.id; rec.hash = hash;
+          }
+          rec.fp = fp; rec.modified = mod;
           stats.pulled++;
         };
 
@@ -427,6 +480,10 @@ async function startup({ id, version, rootURI }) {
       for (const id of this.menuIDs) window.document.getElementById(id)?.remove();
     },
   };
+
+  const rmScope = {};
+  Services.scriptloader.loadSubScript(rootURI + "rmparse.js", rmScope);
+  ZoteroRemarkable.rm = rmScope;
 
   Zotero.Send2Remarkable = ZoteroRemarkable;
   Zotero.PreferencePanes.register({

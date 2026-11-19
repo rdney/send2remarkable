@@ -16,6 +16,18 @@
     </vbox>
 
     <vbox style="margin-top: 14px;">
+      <label value="Annotations coming back from the tablet"/>
+      <checkbox label="Create a note with the text highlights"
+                preference="extensions.zotero-remarkable.createNote"/>
+      <checkbox label="Attach the annotated PDF"
+                preference="extensions.zotero-remarkable.attachPdf"/>
+      <description>
+        The note lists each highlight as a quote with its page. The annotated PDF is drawn by rmapi and
+        may show highlights as grey bars. Both are replaced when the document changes on the tablet.
+      </description>
+    </vbox>
+
+    <vbox style="margin-top: 14px;">
       <label value="Path to rmapi"/>
       <html:input id="send2remarkable-rmapi" type="text"
                   preference="extensions.zotero-remarkable.rmapiPath"
