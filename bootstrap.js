@@ -17,6 +17,24 @@ async function startup({ id, version, rootURI }) {
 
     pref(name) { return Zotero.Prefs.get(this.PREF + name, true); },
 
+    // folder on the tablet: always absolute, no trailing slash
+    folder() {
+      let f = String(this.pref("folder") || "").trim();
+      if (!f) f = "/Zotero";
+      if (!f.startsWith("/")) f = "/" + f;
+      f = f.replace(/\/+$/, "");
+      return f || "/Zotero";
+    },
+
+    // used by the preference pane
+    async checkRmapi(doc) {
+      const el = doc.getElementById("send2remarkable-status");
+      const set = (t) => { if (el) el.textContent = t; };
+      set("Checking…");
+      const p = await this.findRmapi();
+      set(p ? "Found: " + p : "rmapi not found. Install it and pair it first (see the README), or enter its full path above.");
+    },
+
     async findRmapi() {
       const custom = this.pref("rmapiPath");
       const home = Services.dirsvc.get("Home", Ci.nsIFile).path;
@@ -64,7 +82,7 @@ async function startup({ id, version, rootURI }) {
           throw new Error("rmapi not found. Install it (github.com/ddvk/rmapi), run it once to pair, "
             + "or set extensions.zotero-remarkable.rmapiPath in the Config Editor.");
         }
-        const folder = this.pref("folder") || "/Zotero";
+        const folder = this.folder();
         try { await Zotero.Utilities.Internal.exec(rmapi, ["mkdir", folder]); } catch (e) { /* exists */ }
 
         let sent = 0, skipped = 0, failed = [];
@@ -118,7 +136,7 @@ async function startup({ id, version, rootURI }) {
       try {
         const rmapi = await this.findRmapi();
         if (!rmapi) throw new Error("rmapi not found (see Send to reMarkable).");
-        const folder = (this.pref("folder") || "/Zotero").replace(/\/$/, "");
+        const folder = this.folder();
         let got = 0, missing = [];
         for (const item of items) {
           const pdf = await this.pdfFor(item);
@@ -254,7 +272,7 @@ async function startup({ id, version, rootURI }) {
         if (!cols.length) throw new Error("Select a collection first.");
         const rmapi = await this.findRmapi();
         if (!rmapi) throw new Error("rmapi not found (see Send to reMarkable).");
-        const root = (this.pref("folder") || "/Zotero").replace(/\/$/, "");
+        const root = this.folder();
         const st = await this.loadState();
         st.items = st.items || {};
         const made = new Set();
@@ -389,6 +407,13 @@ async function startup({ id, version, rootURI }) {
     },
   };
 
+  Zotero.Send2Remarkable = ZoteroRemarkable;
+  Zotero.PreferencePanes.register({
+    pluginID: id,
+    src: rootURI + "prefs.xhtml",
+    label: "reMarkable",
+  });
+
   for (const win of Zotero.getMainWindows()) ZoteroRemarkable.addToWindow(win);
 }
 
@@ -398,5 +423,6 @@ function onMainWindowUnload({ window }) { ZoteroRemarkable?.removeFromWindow(win
 function shutdown() {
   if (!ZoteroRemarkable) return;
   for (const win of Zotero.getMainWindows()) ZoteroRemarkable.removeFromWindow(win);
+  delete Zotero.Send2Remarkable;
   ZoteroRemarkable = undefined;
 }

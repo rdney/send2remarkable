@@ -31,12 +31,10 @@ The plugin finds `rmapi` in `/opt/homebrew/bin`, `/usr/local/bin`, `~/go/bin`, `
 
 ## Settings
 
-There is no settings pane yet. Use **Settings > Advanced > Config Editor**:
+Open **Zotero > Settings > reMarkable**:
 
-| Preference | Default | Meaning |
-| --- | --- | --- |
-| `extensions.zotero-remarkable.folder` | `/Zotero` | Root folder on the tablet |
-| `extensions.zotero-remarkable.rmapiPath` | *(empty)* | Full path to `rmapi` if it is somewhere unusual |
+- **Folder on the tablet** – root folder for uploads (default `/Zotero`).
+- **Path to rmapi** – leave empty to search the usual locations, or enter the full path. The **Check rmapi** button shows which `rmapi` the plugin will use.
 
 ## How sync decides what to do
 

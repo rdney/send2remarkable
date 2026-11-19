@@ -1,0 +1,34 @@
+<vbox id="send2remarkable-prefs"
+      xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml">
+  <groupbox>
+    <label><html:h2>Send to reMarkable</html:h2></label>
+
+    <vbox>
+      <label value="Folder on the tablet"/>
+      <html:input id="send2remarkable-folder" type="text"
+                  preference="extensions.zotero-remarkable.folder"
+                  style="width: 320px;"/>
+      <description>
+        Root folder for everything this plugin uploads. Collections are mirrored
+        below it, for example /Zotero/My collection. Default: /Zotero
+      </description>
+    </vbox>
+
+    <vbox style="margin-top: 14px;">
+      <label value="Path to rmapi"/>
+      <html:input id="send2remarkable-rmapi" type="text"
+                  preference="extensions.zotero-remarkable.rmapiPath"
+                  style="width: 320px;"/>
+      <description>
+        Leave empty to look in the usual places (/opt/homebrew/bin, /usr/local/bin,
+        ~/go/bin, ~/.local/bin, /usr/bin). Enter the full path if rmapi is installed elsewhere.
+      </description>
+      <hbox align="center" style="margin-top: 6px;">
+        <button label="Check rmapi"
+                oncommand="Zotero.Send2Remarkable.checkRmapi(document)"/>
+      </hbox>
+      <description id="send2remarkable-status"/>
+    </vbox>
+  </groupbox>
+</vbox>
